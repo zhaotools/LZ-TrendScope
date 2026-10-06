@@ -2182,6 +2182,43 @@ function installStageTransitions(container, chart, candle, series, history) {
   };
 }
 
+function fitChartTooltip(container, marker, tooltip) {
+  const containerRect = container.getBoundingClientRect();
+  const markerRect = marker.getBoundingClientRect();
+  const padding = 8;
+  const availableWidth = Math.max(0, containerRect.width - padding * 2);
+  tooltip.style.minWidth = `${Math.min(240, availableWidth)}px`;
+  tooltip.style.maxWidth = `${Math.min(310, availableWidth)}px`;
+  tooltip.style.whiteSpace = availableWidth < 310 ? "normal" : "nowrap";
+
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const markerLeft = markerRect.left - containerRect.left;
+  const markerTop = markerRect.top - containerRect.top;
+  const centeredLeft = markerLeft + markerRect.width / 2 - tooltipRect.width / 2;
+  const maxLeft = Math.max(padding, containerRect.width - tooltipRect.width - padding);
+  const left = Math.max(padding, Math.min(maxLeft, centeredLeft));
+
+  const above = markerTop - tooltipRect.height - padding;
+  const below = markerTop + markerRect.height + padding;
+  const maxTop = Math.max(padding, containerRect.height - tooltipRect.height - padding);
+  const prefersAbove = marker.classList.contains("below");
+  const preferredTop = prefersAbove ? above : below;
+  const alternateTop = prefersAbove ? below : above;
+  const preferredFits = preferredTop >= padding && preferredTop <= maxTop;
+  const alternateFits = alternateTop >= padding && alternateTop <= maxTop;
+  const top = preferredFits
+    ? preferredTop
+    : alternateFits
+      ? alternateTop
+      : Math.max(padding, Math.min(maxTop, preferredTop));
+
+  tooltip.style.right = "auto";
+  tooltip.style.bottom = "auto";
+  tooltip.style.left = `${left - markerLeft}px`;
+  tooltip.style.top = `${top - markerTop}px`;
+  tooltip.style.transform = "none";
+}
+
 function bandMarkerPresentation(status) {
   if (/低位金叉|趋势金叉/.test(status)) return { tone: "positive", position: "below", iconLabel: "上三角" };
   if (/上行趋势/.test(status)) return { tone: "uptrend", position: "below", iconLabel: "蓝色圆点" };
@@ -2235,6 +2272,7 @@ function installBandHistoryMarkers(container, chart, candle, series, history) {
       marker.setAttribute("aria-label", `${presentation.iconLabel}；${tooltipRows.map(([key, value]) => `${key}：${value}`).join("；")}`);
       marker.append(icon, tooltip);
       layer.append(marker);
+      fitChartTooltip(container, marker, tooltip);
     });
   };
   chart.timeScale().subscribeVisibleLogicalRangeChange?.(redraw);
@@ -3072,7 +3110,7 @@ if ("serviceWorker" in navigator) {
       return;
     }
     navigator.serviceWorker
-      .register(new URL("service-worker.js?v=1.3.47", SITE_ROOT), { updateViaCache: "none" })
+      .register(new URL("service-worker.js?v=1.3.48", SITE_ROOT), { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(console.warn);
   });
