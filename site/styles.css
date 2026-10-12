@@ -223,7 +223,8 @@ html[data-watchlist-theme="light"] .theme-icon-moon { display: block; }
 body.empty-watchlist .application-content main,
 body.empty-watchlist .application-content .module-tabs,
 body.empty-watchlist .application-content .mobile-detail-toolbar,
-body.empty-watchlist .application-content .mobile-nav { display: none; }
+body.empty-watchlist .mobile-nav,
+body.watchlist-view .mobile-nav { display: none !important; }
 .asset-watchlist.sorting .watchlist-asset {
   padding-left: 28px;
   border-color: rgba(128, 202, 240, 0.17);
@@ -1803,15 +1804,15 @@ body.methodology-view [data-panel="methodology"] { min-height: 100vh; padding-to
   .fundamental-factor-reading { align-items: flex-start; flex-direction: column; }
   .factor-change-list { justify-content: flex-start; }
   .factor-source { flex-direction: column; gap: 4px; }
-  .site-footer { flex-direction: column; padding-bottom: 90px; }
+  .site-footer { flex-direction: column; padding-bottom: calc(104px + env(safe-area-inset-bottom)); }
   .mobile-nav {
     position: fixed;
-    right: 10px;
-    bottom: calc(10px + env(safe-area-inset-bottom));
-    left: 10px;
+    inset: auto 10px calc(10px + env(safe-area-inset-bottom));
     z-index: 40;
     display: grid;
     grid-template-columns: repeat(5, 1fr);
+    width: auto;
+    margin: 0;
     padding: 6px;
     border: 1px solid rgba(201, 212, 220, 0.92);
     border-radius: 17px;
