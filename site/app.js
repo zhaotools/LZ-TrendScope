@@ -547,7 +547,7 @@ function renderWatchlist() {
     return `
       <button class="watchlist-asset ${assetId === state.assetId ? "active" : ""} ${esc(status)}" type="button" data-asset="${esc(assetId)}" data-status="${esc(status)}" aria-pressed="${assetId === state.assetId}" ${state.watchlistSorting ? 'aria-grabbed="false"' : ""} aria-label="${esc(asset.shortName)}${state.watchlistSorting ? "，可拖动排序" : ""}">
         ${state.watchlistSorting ? '<span class="watchlist-drag-handle" role="button" tabindex="0" aria-label="按住拖动资产排序" aria-grabbed="false" title="按住拖动排序"><span aria-hidden="true">⋮</span></span>' : ""}
-        <span class="watchlist-asset-copy"><strong>${esc(asset.code)}${asset.category === "macro" ? "" : `/${esc(asset.currency || "USD")}`}</strong><small>${esc(asset.shortName)}</small></span>
+        <span class="watchlist-asset-copy"><strong title="${esc(asset.code)}">${esc(asset.code)}</strong><small title="${esc(asset.shortName)}">${esc(asset.shortName)}</small></span>
         <span class="watchlist-price ${quote.delayed ? "delayed" : ""}" ${quote.delayed ? `title="${esc(`${asset.category === "macro" ? "数据" : "行情"}延迟，最近可用 ${fmtDate(quote.date)}`)}"` : ""}>${ready ? quote.price : "—"}</span>
         <span class="watchlist-change ${quote.tone}">${ready ? quote.change : "—"}</span>
         <span class="watchlist-stage ${weeklyStage ? `stage-s${weeklyStage}` : ""}">${weekly}</span>
@@ -3110,7 +3110,7 @@ if ("serviceWorker" in navigator) {
       return;
     }
     navigator.serviceWorker
-      .register(new URL("service-worker.js?v=1.3.49", SITE_ROOT), { updateViaCache: "none" })
+      .register(new URL("service-worker.js?v=1.3.50", SITE_ROOT), { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(console.warn);
   });

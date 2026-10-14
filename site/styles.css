@@ -280,7 +280,7 @@ body.watchlist-dragging { cursor: grabbing; }
 .watchlist-asset:hover { color: white; background: rgba(255, 255, 255, 0.07); }
 .watchlist-asset.active { color: white; border-color: rgba(128, 202, 240, 0.24); background: #174d69; box-shadow: inset 3px 0 0 #58a4c9; }
 .watchlist-asset-copy { min-width: 0; }
-.watchlist-asset-copy strong { display: block; color: rgba(255, 255, 255, 0.92); font-size: 13px; line-height: 1.2; overflow-wrap: anywhere; }
+.watchlist-asset-copy strong { display: block; overflow: hidden; color: rgba(255, 255, 255, 0.92); font-size: 13px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .watchlist-asset-copy small { display: block; overflow: hidden; margin-top: 4px; color: rgba(255, 255, 255, 0.48); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .watchlist-price,
 .watchlist-change,
