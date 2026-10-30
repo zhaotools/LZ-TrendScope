@@ -81,9 +81,9 @@ let watchlistDrag = null;
 let memberSessionEnding = false;
 
 const ASSET_CODE_PATTERNS = {
-  us_equity: /^[A-Z][A-Z0-9.-]{0,14}$/,
+  us_equity: /^\^?[A-Z][A-Z0-9.-]{0,14}$/,
   cn_equity: /^\d{6}(?:\.(?:SS|SZ|BJ))?$/,
-  hk_equity: /^\d{4,5}(?:\.HK)?$/,
+  hk_equity: /^(?:\d{4,5}(?:\.HK)?|HSI|HSTECH|HSEWI)$/,
   crypto: /^[A-Z0-9]{2,20}(?:[-/](?:USD|USDT|USDC))?$/,
   commodity: /^[A-Z]{1,12}(?:=F)?$/,
   macro: /^(?:US10Y|DXY)$/,
@@ -3110,7 +3110,7 @@ if ("serviceWorker" in navigator) {
       return;
     }
     navigator.serviceWorker
-      .register(new URL("service-worker.js?v=1.3.50", SITE_ROOT), { updateViaCache: "none" })
+      .register(new URL("service-worker.js?v=1.3.51", SITE_ROOT), { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(console.warn);
   });
