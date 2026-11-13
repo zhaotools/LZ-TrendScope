@@ -81,13 +81,14 @@ let watchlistDrag = null;
 let memberSessionEnding = false;
 
 const ASSET_CODE_PATTERNS = {
-  us_equity: /^[A-Z][A-Z0-9.-]{0,14}$/,
+  us_equity: /^\^?[A-Z][A-Z0-9.-]{0,14}$/,
   cn_equity: /^\d{6}(?:\.(?:SS|SZ|BJ))?$/,
-  hk_equity: /^\d{4,5}(?:\.HK)?$/,
+  hk_equity: /^(?:\d{4,5}(?:\.HK)?|HSI|HSTECH|HSEWI)$/,
   crypto: /^[A-Z0-9]{2,20}(?:[-/](?:USD|USDT|USDC))?$/,
   commodity: /^[A-Z]{1,12}(?:=F)?$/,
+  macro: /^(?:US10Y|DXY)$/,
 };
-const WATCHLIST_CATEGORIES = new Set(["all", "us_equity", "cn_equity", "hk_equity", "crypto", "commodity"]);
+const WATCHLIST_CATEGORIES = new Set(["all", "us_equity", "cn_equity", "hk_equity", "crypto", "commodity", "macro"]);
 function applyWatchlistTheme(value, { persist = false } = {}) {
   const theme = value === "light" ? "light" : "dark";
   const targetTheme = theme === "dark" ? "light" : "dark";
@@ -193,7 +194,7 @@ function updateAssetPresentationFromSnapshot(assetId, snapshot) {
 
 function loadAssetResource(assetId, resource) {
   if (resource === "dca-series.json") {
-    if (!canUseDca()) throw new Error("当前账号未开通定投指标。");
+    if (!canUseDca(assetId)) throw new Error(isMacroAsset(assetId) ? "宏观资产不提供定投建议。" : "当前账号未开通定投指标。");
     return loadMemberAssetResource(assetId, resource);
   }
   return loadMemberAssetResource(assetId, resource);
@@ -212,8 +213,17 @@ function isMember() {
   return isProfileActive(state.memberProfile);
 }
 
-function canUseDca() {
-  return isDcaEnabled(state.memberProfile);
+function canUseDca(assetId = state.assetId) {
+  return !isMacroAsset(assetId) && isDcaEnabled(state.memberProfile);
+}
+
+function isMacroAsset(assetId = state.assetId) {
+  return assets[assetId]?.category === "macro";
+}
+
+function isLegacyMacroObservation(assetId = state.assetId) {
+  const snapshot = assetId === state.assetId ? state.current : state.assetSummaries.get(assetId);
+  return snapshot?.schemaVersion === "macro-observation-v1";
 }
 
 function canAccessAsset(assetId) {
@@ -258,6 +268,7 @@ function normalizeRoute({ preferFirstAsset = false, preferWatchlist = false } = 
   if (!firstAssetId) {
     state.loadToken += 1;
     state.assetId = null;
+    document.body.classList.remove("macro-asset", "macro-observation");
     state.current = null;
     state.daily = null;
     state.weekly = null;
@@ -295,7 +306,9 @@ function normalizeRoute({ preferFirstAsset = false, preferWatchlist = false } = 
     assetId = firstAssetId;
     route = route === "methodology" ? route : "overview";
   }
-  if (route === "dca" && !canUseDca()) {
+  if (isLegacyMacroObservation(assetId) && !["overview", "methodology"].includes(route)) route = "overview";
+  if (isMacroAsset(assetId) && route === "dca") route = "overview";
+  if (route === "dca" && !canUseDca(assetId)) {
     if (isMember()) {
       state.pendingDcaNotice = true;
     } else {
@@ -319,7 +332,9 @@ function normalizeRoute({ preferFirstAsset = false, preferWatchlist = false } = 
 function updateRouteLinks() {
   $$('[data-route]').forEach((link) => {
     link.href = routePath(link.dataset.route);
-    if (link.dataset.route === "dca") link.hidden = !canUseDca();
+    if (["weekly", "daily", "dca", "fundamentals"].includes(link.dataset.route)) {
+      link.hidden = isLegacyMacroObservation() || (link.dataset.route === "dca" && !canUseDca());
+    }
   });
   $$('[data-watchlist-link]').forEach((link) => { link.href = watchlistPath(); });
 }
@@ -417,16 +432,23 @@ function watchlistQuote(snapshot) {
   const validPrevious = Number.isFinite(previousClose) && previousClose !== 0;
   const change = validPrice && validPrevious ? ((price - previousClose) / previousClose) * 100 : null;
   const freshness = snapshot?.quality?.marketFreshness;
+  const macro = snapshot?.asset?.categoryId === "macro";
+  const yieldSeries = macro && snapshot?.macro?.code === "US10Y";
   return {
-    price: validPrice ? price.toLocaleString("zh-CN", { useGrouping: false, minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—",
-    change: Number.isFinite(change) ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}%` : "—",
-    tone: Number.isFinite(change) ? (change >= 0 ? "positive" : "negative") : "",
+    price: validPrice
+      ? `${price.toLocaleString("zh-CN", { useGrouping: false, minimumFractionDigits: 2, maximumFractionDigits: 2 })}${yieldSeries ? "%" : ""}`
+      : "—",
+    change: yieldSeries && validPrice && validPrevious
+      ? `${(price - previousClose) >= 0 ? "+" : ""}${((price - previousClose) * 100).toFixed(1)}bp`
+      : Number.isFinite(change) ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}%` : "—",
+    tone: macro ? "" : Number.isFinite(change) ? (change >= 0 ? "positive" : "negative") : "",
     delayed: freshness?.sourceFresh === false,
     date: freshness?.lastDate || snapshot?.quote?.date || "",
   };
 }
 
 function watchlistWeekly(snapshot, fallbackStatus) {
+  if (snapshot?.schemaVersion === "macro-observation-v1") return "待更新";
   const confirmed = snapshot?.weekly?.current?.confirmed;
   const code = confirmed?.label || confirmed?.code;
   const weeks = Number(confirmed?.weeks);
@@ -439,10 +461,11 @@ function assetStatusLabel(status) {
 }
 
 function instrumentTypeLabel(value) {
-  return ({ EQUITY: "个股", ETF: "ETF", INDEX: "指数" })[String(value || "").toUpperCase()] || "资产";
+  return ({ EQUITY: "个股", ETF: "ETF", INDEX: "指数", MACRO: "宏观观察项" })[String(value || "").toUpperCase()] || "资产";
 }
 
 function catalogMarketSource(asset) {
+  if (asset.category === "macro") return asset.displaySymbol === "US10Y" ? "Yahoo Finance / Cboe 10年期收益率" : "Yahoo Finance / ICE 美元指数";
   if (asset.category === "cn_equity" && String(asset.quoteType || "").toUpperCase() === "INDEX") {
     return "腾讯证券";
   }
@@ -481,6 +504,7 @@ function renderWatchlist() {
   const categoryFilter = $("#watchlist-category-filter");
   const watchlistNode = $("#asset-watchlist");
   categoryFilter.value = state.watchlistCategory;
+  $(".watchlist-table-header span:nth-child(2)").textContent = state.watchlistCategory === "macro" ? "最新值" : "日收盘";
   categoryFilter.disabled = !watchlist.length || state.watchlistSorting;
   addButton.hidden = !member;
   addButton.disabled = member && (watchlist.length >= 30 || state.watchlistSorting);
@@ -523,8 +547,8 @@ function renderWatchlist() {
     return `
       <button class="watchlist-asset ${assetId === state.assetId ? "active" : ""} ${esc(status)}" type="button" data-asset="${esc(assetId)}" data-status="${esc(status)}" aria-pressed="${assetId === state.assetId}" ${state.watchlistSorting ? 'aria-grabbed="false"' : ""} aria-label="${esc(asset.shortName)}${state.watchlistSorting ? "，可拖动排序" : ""}">
         ${state.watchlistSorting ? '<span class="watchlist-drag-handle" role="button" tabindex="0" aria-label="按住拖动资产排序" aria-grabbed="false" title="按住拖动排序"><span aria-hidden="true">⋮</span></span>' : ""}
-        <span class="watchlist-asset-copy"><strong>${esc(asset.code)}/${esc(asset.currency || "USD")}</strong><small>${esc(asset.shortName)}</small></span>
-        <span class="watchlist-price ${quote.delayed ? "delayed" : ""}" ${quote.delayed ? `title="${esc(`行情延迟，最近可用 ${fmtDate(quote.date)}`)}"` : ""}>${ready ? quote.price : "—"}</span>
+        <span class="watchlist-asset-copy"><strong title="${esc(asset.code)}">${esc(asset.code)}</strong><small title="${esc(asset.shortName)}">${esc(asset.shortName)}</small></span>
+        <span class="watchlist-price ${quote.delayed ? "delayed" : ""}" ${quote.delayed ? `title="${esc(`${asset.category === "macro" ? "数据" : "行情"}延迟，最近可用 ${fmtDate(quote.date)}`)}"` : ""}>${ready ? quote.price : "—"}</span>
         <span class="watchlist-change ${quote.tone}">${ready ? quote.change : "—"}</span>
         <span class="watchlist-stage ${weeklyStage ? `stage-s${weeklyStage}` : ""}">${weekly}</span>
         ${removable ? `<span class="watchlist-remove" role="button" tabindex="0" data-remove-asset="${esc(assetId)}" aria-label="从自选移除">×</span>` : ""}
@@ -659,7 +683,7 @@ function initializationStageLabel(stage) {
   return ({
     queued: "已加入初始化队列",
     fetching_history: "正在获取历史行情",
-    publishing: "正在发布分析快照",
+    publishing: "正在发布数据快照",
     complete: "初始化完成",
     failed: "初始化失败",
   })[stage] || "正在执行初始化";
@@ -668,6 +692,7 @@ function initializationStageLabel(stage) {
 function initializationFailureMessage(job) {
   return ({
     market_history_failed: "历史行情暂时无法获取，请稍后移除并重新添加。",
+    macro_history_failed: "宏观数据源暂时无法获取，请稍后移除并重新添加。",
     daily_analysis_failed: "日线状态分析未完成，请稍后重试。",
     weekly_analysis_failed: "周线阶段分析未完成，请稍后重试。",
     fundamentals_build_failed: "基本面初始状态生成未完成，请稍后重试。",
@@ -1066,7 +1091,7 @@ function clearCharts() {
     chart?.remove?.();
   });
   state.charts.clear();
-  for (const id of ["weekly-chart", "daily-chart", "dca-chart"]) {
+  for (const id of ["weekly-chart", "daily-chart", "dca-chart", "macro-chart"]) {
     const container = document.getElementById(id);
     if (container) container.replaceChildren();
   }
@@ -1105,7 +1130,11 @@ function syncRouteShell(route) {
 }
 
 function activateRoute() {
-  const route = routeFromLocation();
+  let route = routeFromLocation();
+  if ((isLegacyMacroObservation() && !["overview", "methodology"].includes(route)) || (isMacroAsset() && route === "dca")) {
+    route = "overview";
+    history.replaceState({ assetId: state.assetId, route }, "", routePath(route));
+  }
   if (syncPageMode()) {
     renderWatchlist();
     updateRouteLinks();
@@ -1123,6 +1152,11 @@ function activateRoute() {
   updateRouteLinks();
   renderWatchlist();
   if (state.current) void ensureRouteData(route);
+  if (route === "overview" && isLegacyMacroObservation() && state.daily?.series?.length) {
+    void loadChartLibrary().then(() => requestAnimationFrame(renderMacroChart)).catch((error) => {
+      $("#macro-chart").textContent = error.message;
+    });
+  }
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -1158,6 +1192,7 @@ function setRouteState(route, status, message = "") {
 
 async function ensureRouteData(route, { force = false } = {}) {
   if (["overview", "methodology"].includes(route)) return;
+  if (route === "dca" && !canUseDca()) return;
   const assetId = state.assetId;
   if (force) state.routeLoads.delete(route);
   if (state.routeLoads.has(route)) return state.routeLoads.get(route);
@@ -1258,10 +1293,14 @@ function updateHeader() {
   const quote = current.quote;
   const marketFreshness = current.quality?.marketFreshness;
   document.body.dataset.asset = state.assetId;
+  document.body.classList.toggle("macro-asset", isMacroAsset());
+  document.body.classList.toggle("macro-observation", isLegacyMacroObservation());
   document.title = `LZ-TrendScope · ${presentation.name}观察`;
   $("#asset-symbol").textContent = presentation.code;
   $("#asset-name").textContent = presentation.name;
-  $("#mobile-detail-title").textContent = `${presentation.code}/${presentation.currency || quote.currency || "USD"} · ${presentation.name}`;
+  $("#mobile-detail-title").textContent = isMacroAsset()
+    ? `${presentation.code} · ${presentation.name}`
+    : `${presentation.code}/${presentation.currency || quote.currency || "USD"} · ${presentation.name}`;
   $("#overview-title").textContent = `${presentation.name}状态总览`;
   $("#footer-label").textContent = `LZ-TrendScope · ${presentation.name}观察`;
   $("#module-tabs").setAttribute("aria-label", `${presentation.name}分析模块`);
@@ -1273,16 +1312,21 @@ function updateHeader() {
   $("#asset-benchmark").textContent = ["cn_equity", "hk_equity"].includes(presentation.category)
     ? `${current.asset.symbol} · ${presentation.category === "cn_equity" ? "A股" : "港股"}`
     : current.asset.technicalBenchmark;
-  $("#quote-price").textContent = fmt(quote.price, 1);
+  $("#quote-price").textContent = fmt(quote.price, isMacroAsset() ? 2 : 1);
   $(".quote-label").textContent = marketFreshness?.sourceFresh === false
-    ? "行情延迟 · 最近可用收盘"
-    : "最新确认收盘";
+    ? isMacroAsset() ? "数据延迟 · 最近观测值" : "行情延迟 · 最近可用收盘"
+    : isMacroAsset() ? "最新观测值" : "最新确认收盘";
   $("#quote-currency").textContent = quote.currency;
   const change = $("#quote-change");
-  change.textContent = `${delta >= 0 ? "+" : ""}${fmt(delta, 1)} · ${percent >= 0 ? "+" : ""}${fmt(percent, 2)}%`;
-  change.className = delta >= 0 ? "positive" : "negative";
+  change.textContent = isMacroAsset()
+    ? current.macro.code === "US10Y"
+      ? `${delta >= 0 ? "+" : ""}${fmt(delta * 100, 1)} bp · 较上一观测日`
+      : `${delta >= 0 ? "+" : ""}${fmt(delta, 2)} 点 · ${percent >= 0 ? "+" : ""}${fmt(percent, 2)}%`
+    : `${delta >= 0 ? "+" : ""}${fmt(delta, 1)} · ${percent >= 0 ? "+" : ""}${fmt(percent, 2)}%`;
+  change.className = isMacroAsset() ? "" : delta >= 0 ? "positive" : "negative";
+  $(".hero-meta dt").textContent = isLegacyMacroObservation() ? "观测日期" : "日线日期";
   $("#daily-date").textContent = fmtDate(current.daily.asOf);
-  $("#weekly-date").textContent = fmtDate(current.weekly.asOf);
+  $("#weekly-date").textContent = fmtDate(current.weekly?.asOf);
   const generatedAt = new Date(current.generatedAt);
   $("#generated-date").textContent = generatedAt.toLocaleDateString("zh-CN", {
     timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit",
@@ -1294,6 +1338,43 @@ function updateHeader() {
     timeZone: "Asia/Shanghai", hour12: false,
   });
   renderWatchlist();
+}
+
+function renderMacroOverview() {
+  const current = state.current;
+  const yieldSeries = current.macro.code === "US10Y";
+  const delta = Number(current.quote.price) - Number(current.quote.previousClose);
+  const percent = Number(current.quote.previousClose) ? delta / Number(current.quote.previousClose) * 100 : 0;
+  $("#macro-title").textContent = current.asset.name;
+  $("#overview-title").textContent = `${current.asset.name}宏观观察`;
+  $("#macro-value").textContent = `${fmt(current.quote.price, 2)} ${current.macro.unit}`;
+  $("#macro-delta-label").textContent = yieldSeries ? "较上一观测日 · 基点" : "较上一观测日 · 点数";
+  $("#macro-delta").textContent = yieldSeries
+    ? `${delta >= 0 ? "+" : ""}${fmt(delta * 100, 1)} bp`
+    : `${delta >= 0 ? "+" : ""}${fmt(delta, 2)} 点 (${percent >= 0 ? "+" : ""}${fmt(percent, 2)}%)`;
+  $("#macro-date").textContent = fmtDate(current.quote.date);
+  $("#macro-chart-title").textContent = `${current.asset.name} · 历史日值`;
+  $("#macro-chart").setAttribute("aria-label", `${current.asset.name}历史日值折线图`);
+  $("#macro-description").textContent = yieldSeries
+    ? "美国10年期国债收益率，单位为百分比；官方日值不含真实开高低收和成交量。"
+    : "ICE 美元指数的日度收盘观察值；这不是美联储广义美元指数。";
+  const freshness = current.quality?.marketFreshness;
+  $("#macro-source-note").textContent = `数据源：${current.source.name} · 截至 ${fmtDate(current.quote.date)}${freshness?.sourceFresh === false ? " · 数据源更新延迟" : ""}。技术分析快照正在更新，宏观资产不提供定投建议。`;
+}
+
+function renderMacroChart() {
+  const id = "macro-chart";
+  if (state.charts.has(id) || !state.daily?.series?.length) return;
+  const container = document.getElementById(id);
+  if (!container || container.clientWidth === 0) return;
+  const api = chartApi(container, "macro");
+  if (!api) return;
+  const line = api.addLine({ color: "#2478a5", lineWidth: 2, priceLineVisible: false });
+  line.setData(state.daily.series.map((point) => ({ time: point.date, value: Number(point.value) })));
+  api.chart.timeScale().fitContent();
+  const observer = new ResizeObserver(() => api.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight }));
+  observer.observe(container);
+  state.charts.set(id, { ...api, line, observer });
 }
 
 function renderOverview() {
@@ -1635,7 +1716,18 @@ function renderFundamentals() {
 
 function dcaTierClass(value) {
   const tier = Number(value);
-  return [0, 20, 40, 60, 80, 100].includes(tier) ? `tier-${tier}` : "tier-40";
+  return [0, 25, 50, 75, 100].includes(tier) ? `tier-${tier}` : "tier-50";
+}
+
+// Presentation names are independent of the frozen v1.1 payload vocabulary.
+// Unknown values must never introduce an extra temperature zone in the UI.
+function dcaZoneLabel(value) {
+  const label = dcaDisplayText(value);
+  return ["低温区", "定投区", "中温区", "观望区", "高温区"].includes(label) ? label : "待判断";
+}
+
+function dcaDisplayText(value) {
+  return String(value ?? "").replaceAll("抄底区", "低温区").replaceAll("观察区", "观望区");
 }
 
 function renderDcaZoneStatistics(dca, years = state.dcaRangeYears) {
@@ -1647,14 +1739,15 @@ function renderDcaZoneStatistics(dca, years = state.dcaRangeYears) {
     ? fullSeries.filter((item) => String(item.date || item.time) >= cutoff)
     : fullSeries;
   const zoneDefinitions = [
-    { source: "抄底区", label: "低温区", className: "zone-cold" },
-    { source: "定投区", label: "定投区", className: "zone-invest" },
-    { source: "观望区", label: "观望区", className: "zone-watch" },
-    { source: "高温区", label: "高温区", className: "zone-hot" },
+    { label: "低温区", className: "zone-cold" },
+    { label: "定投区", className: "zone-invest" },
+    { label: "中温区", className: "zone-mid" },
+    { label: "观望区", className: "zone-watch" },
+    { label: "高温区", className: "zone-hot" },
   ];
   $("#dca-statistics-period").textContent = dca?.historyLimited ? "历史不足" : `近${safeYears}年`;
   $("#dca-tier-statistics").innerHTML = selectedSeries.length ? zoneDefinitions.map((item) => {
-    const days = selectedSeries.filter((point) => point.zone === item.source).length;
+    const days = selectedSeries.filter((point) => dcaZoneLabel(point.zone) === item.label).length;
     return `
     <article class="dca-tier-card ${item.className}">
       <span>${item.label}</span>
@@ -1681,7 +1774,7 @@ function renderDca() {
       <strong>${fmt(current.lzDca, 2)}</strong><span>LZ-DCA</span>
     </div>
     <div class="dca-current-zone ${esc(dcaTierClass(current.amountTier))}">
-      <span>${esc(current.zone || "待判断")}</span><strong>${esc(current.amountLabel || "—")} · ${fmt(current.amountTier, 0)}</strong>
+      <span>${esc(dcaZoneLabel(current.zone))}</span><strong>基准金额 ${esc(current.amountLabel || "—")}</strong>
     </div>
     <dl class="stat-list">
       <div><dt>确认日期</dt><dd>${esc(fmtDate(current.date || dca.asOf))}</dd></div>
@@ -1689,8 +1782,7 @@ function renderDca() {
     </dl>
     <div class="dca-recommendation ${esc(dcaTierClass(current.amountTier))}">
       <strong>规则建议</strong>
-      <p>${esc(current.recommendation || "等待完成日线后更新。")}</p>
-      <small>${esc(current.zoneAction || "")}</small>
+      <p>${esc(dcaDisplayText(current.recommendation || "等待完成日线后更新。"))}</p>
     </div>
     ${reasons.length ? `<p class="dca-confirmation">严格信号确认：${reasons.map(esc).join("；")}</p>` : ""}
     ${historyLimited ? `<p class="dca-history-warning">${esc((dca.warnings || [])[0] || "历史数据不足，仅展示当前建议。")}</p>` : ""}
@@ -1716,6 +1808,22 @@ function renderDca() {
 }
 
 function renderMethodology() {
+  if (isLegacyMacroObservation() && state.current?.macro) {
+    const { current } = state;
+    const yieldSeries = current.macro.code === "US10Y";
+    $("#provenance-panel").innerHTML = `
+      <div class="panel-heading"><span class="panel-kicker">PROVENANCE</span><h2>可追溯信息</h2></div>
+      <div class="provenance-grid">
+        <div class="code-block">观察项<br>${esc(current.asset.name)}<br>${esc(current.macro.code)}</div>
+        <div class="code-block">数据源<br>${esc(current.source.name)}<br>${esc(current.source.providerSymbol)}</div>
+        <div class="code-block">数值单位<br>${yieldSeries ? "收益率，百分比" : "美元指数，点"}<br>逐日观察值</div>
+        <div class="code-block">日期原则<br>只显示已完成日值<br>保留数据源发布日期差异</div>
+        <div class="code-block">数据边界<br>这是旧版单值快照<br>等待真实 OHLC 技术分析更新，定投保持关闭</div>
+        <div class="code-block">序列身份<br>${yieldSeries ? "FRED DGS10" : "ICE DXY，经 Yahoo Finance 获取"}<br>不使用其他美元或债券序列替代</div>
+      </div>
+    `;
+    return;
+  }
   const engines = state.current?.engines || {
     weekly: { name: "LZ-4Stage", version: "LZAS-W-1.0.0" },
     daily: { name: "LZ-Status-V3", version: "LZAS-D-1.0.0" },
@@ -1726,8 +1834,8 @@ function renderMethodology() {
     <div class="provenance-grid">
       <div class="code-block">周线引擎<br>${esc(engines.weekly.name)}<br>内部版本: ${esc(engines.weekly.version)}</div>
       <div class="code-block">日线引擎<br>${esc(engines.daily.name)}<br>内部版本: ${esc(engines.daily.version)}</div>
-      <div class="code-block">定投引擎<br>LZ-DCA V1.1<br>内部版本: ${esc(engines.dca?.version || "LZAS-DCA-1.1.0")}</div>
-      <div class="code-block">统一输入原则<br>同一份标准化 OHLC<br>周线、日线与定投同源</div>
+      ${isMacroAsset() ? '<div class="code-block">宏观分析边界<br>定投建议已关闭<br>无适用成交量，不含成交量加分</div>' : `<div class="code-block">定投引擎<br>LZ-DCA V1.1<br>内部版本: ${esc(engines.dca?.version || "LZAS-DCA-1.1.0")}</div>`}
+      <div class="code-block">统一输入原则<br>同一份标准化真实 OHLC<br>${isMacroAsset() ? "周线和日线同源；US10Y 分析收益率而非债券价格" : "周线、日线与定投同源"}</div>
       <div class="code-block">周期确认原则<br>只使用完成周线<br>只使用确认收盘日线</div>
       <div class="code-block">数据状态原则<br>缺失与沿用明确标识<br>不把缺失数据解释为中性</div>
       <div class="code-block">自动更新机制<br>GitHub 08:08 主更新<br>Cloudflare 08:28 兜底检查</div>
@@ -1878,7 +1986,7 @@ function installDcaBands(container, chart, dcaLine, bands) {
   backgroundLayer.className = "dca-background-layer";
   container.prepend(backgroundLayer);
   const floor = 0;
-  const ceiling = 3;
+  const ceiling = 2.5;
 
   const redraw = () => {
     backgroundLayer.replaceChildren();
@@ -1918,7 +2026,7 @@ function installDcaGuideLabels(container, chart, dcaLine, guides) {
       const label = document.createElement("span");
       label.className = "dca-guide-label";
       label.textContent = guide.title;
-      label.style.left = `${leftScaleWidth + 2}px`;
+      label.style.left = `${leftScaleWidth + (guide.isCurrent && guides.some((other) => !other.isCurrent && Math.abs(other.price - guide.price) < 0.06) ? 66 : 2)}px`;
       label.style.top = `${y}px`;
       label.style.setProperty("--dca-guide-color", guide.color);
       labelLayer.append(label);
@@ -2074,6 +2182,43 @@ function installStageTransitions(container, chart, candle, series, history) {
   };
 }
 
+function fitChartTooltip(container, marker, tooltip) {
+  const containerRect = container.getBoundingClientRect();
+  const markerRect = marker.getBoundingClientRect();
+  const padding = 8;
+  const availableWidth = Math.max(0, containerRect.width - padding * 2);
+  tooltip.style.minWidth = `${Math.min(240, availableWidth)}px`;
+  tooltip.style.maxWidth = `${Math.min(310, availableWidth)}px`;
+  tooltip.style.whiteSpace = availableWidth < 310 ? "normal" : "nowrap";
+
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const markerLeft = markerRect.left - containerRect.left;
+  const markerTop = markerRect.top - containerRect.top;
+  const centeredLeft = markerLeft + markerRect.width / 2 - tooltipRect.width / 2;
+  const maxLeft = Math.max(padding, containerRect.width - tooltipRect.width - padding);
+  const left = Math.max(padding, Math.min(maxLeft, centeredLeft));
+
+  const above = markerTop - tooltipRect.height - padding;
+  const below = markerTop + markerRect.height + padding;
+  const maxTop = Math.max(padding, containerRect.height - tooltipRect.height - padding);
+  const prefersAbove = marker.classList.contains("below");
+  const preferredTop = prefersAbove ? above : below;
+  const alternateTop = prefersAbove ? below : above;
+  const preferredFits = preferredTop >= padding && preferredTop <= maxTop;
+  const alternateFits = alternateTop >= padding && alternateTop <= maxTop;
+  const top = preferredFits
+    ? preferredTop
+    : alternateFits
+      ? alternateTop
+      : Math.max(padding, Math.min(maxTop, preferredTop));
+
+  tooltip.style.right = "auto";
+  tooltip.style.bottom = "auto";
+  tooltip.style.left = `${left - markerLeft}px`;
+  tooltip.style.top = `${top - markerTop}px`;
+  tooltip.style.transform = "none";
+}
+
 function bandMarkerPresentation(status) {
   if (/低位金叉|趋势金叉/.test(status)) return { tone: "positive", position: "below", iconLabel: "上三角" };
   if (/上行趋势/.test(status)) return { tone: "uptrend", position: "below", iconLabel: "蓝色圆点" };
@@ -2127,6 +2272,7 @@ function installBandHistoryMarkers(container, chart, candle, series, history) {
       marker.setAttribute("aria-label", `${presentation.iconLabel}；${tooltipRows.map(([key, value]) => `${key}：${value}`).join("；")}`);
       marker.append(icon, tooltip);
       layer.append(marker);
+      fitChartTooltip(container, marker, tooltip);
     });
   };
   chart.timeScale().subscribeVisibleLogicalRangeChange?.(redraw);
@@ -2406,12 +2552,12 @@ function renderDcaChart() {
     }),
   });
   priceLine.setData(priceSeries.map((bar) => ({ time: bar.date || bar.time, value: Number(bar.close) })));
-  const currentDca = Number(series.at(-1)?.lzDca);
-  const dcaAxisValues = [0, 0.5, 1, 2, 3, currentDca].filter(Number.isFinite);
+  const currentDca = Number(dca.current?.lzDca ?? series.at(-1)?.lzDca);
+  const dcaAxisValues = [0, 0.5, 1, 1.5, 2, 2.5, currentDca].filter(Number.isFinite);
   const dcaAxisFormatter = (value) => {
+    if (Number.isFinite(currentDca) && Math.abs(Number(value) - currentDca) < 0.005) return currentDca.toFixed(2);
     const match = dcaAxisValues.find((candidate) => Math.abs(Number(value) - candidate) < 0.005);
     if (match == null) return "";
-    if (Math.abs(match - currentDca) < 0.005 && ![0, 0.5, 1, 2, 3].includes(match)) return match.toFixed(2);
     return match === 0 ? "0" : match.toFixed(1);
   };
   const dcaLine = api.addLine({
@@ -2423,14 +2569,15 @@ function renderDcaChart() {
     lastValueVisible: false,
     priceFormat: { type: "custom", minMove: 0.01, formatter: dcaAxisFormatter },
     autoscaleInfoProvider: () => ({
-      priceRange: { minValue: 0, maxValue: 3 },
+      priceRange: { minValue: 0, maxValue: 2.5 },
     }),
   });
   dcaLine.setData(series.map((item) => ({ time: item.date || item.time, value: Number(item.lzDca) })));
   const dcaTemperatureGuides = [
     { price: 0.5, title: "低温线", color: "#2f6fb6" },
     { price: 1, title: "定投线", color: "#16835d" },
-    { price: 2, title: "高位线", color: "#c94f55" },
+    { price: 1.5, title: "中温线", color: "#c98632" },
+    { price: 2, title: "高温线", color: "#c94f55" },
   ];
   const temperatureLines = dcaTemperatureGuides.map(({ price, color }) => dcaLine.createPriceLine({
     price,
@@ -2441,6 +2588,15 @@ function renderDcaChart() {
     lineVisible: true,
     axisLabelVisible: true,
   }));
+  const currentDcaLine = Number.isFinite(currentDca) ? dcaLine.createPriceLine({
+    price: currentDca,
+    color: "#2478a5",
+    title: "",
+    lineWidth: 3,
+    lineStyle: 2,
+    lineVisible: true,
+    axisLabelVisible: true,
+  }) : null;
   const zeroLine = dcaLine.createPriceLine({
     price: 0,
     color: "rgba(110,130,146,.45)",
@@ -2450,7 +2606,7 @@ function renderDcaChart() {
     title: "",
   });
   const ceilingLine = dcaLine.createPriceLine({
-    price: 3,
+    price: 2.5,
     color: "rgba(110,130,146,.45)",
     lineWidth: 1,
     lineVisible: false,
@@ -2468,7 +2624,7 @@ function renderDcaChart() {
   });
   anchors.setData([
     { time: series[0].date || series[0].time, value: 0 },
-    { time: series.at(-1).date || series.at(-1).time, value: 3 },
+    { time: series.at(-1).date || series.at(-1).time, value: 2.5 },
   ]);
   const dcaDates = new Set(series.map((item) => item.date || item.time));
   const signalMarkers = [...(dca.signals || [])]
@@ -2496,7 +2652,10 @@ function renderDcaChart() {
   api.chart.timeScale().fitContent();
   applyDcaTimeRange(api.chart, series);
   const redrawBands = installDcaBands(container, api.chart, dcaLine, dca.bands);
-  const redrawGuideLabels = installDcaGuideLabels(container, api.chart, dcaLine, dcaTemperatureGuides);
+  const currentDcaGuides = Number.isFinite(currentDca)
+    ? [...dcaTemperatureGuides, { price: currentDca, title: `LZ-DCA ${currentDca.toFixed(2)}`, color: "#2478a5", isCurrent: true }]
+    : dcaTemperatureGuides;
+  const redrawGuideLabels = installDcaGuideLabels(container, api.chart, dcaLine, currentDcaGuides);
   const asset = assets[state.assetId] || {};
   const assetCurrency = state.current?.quote?.currency || asset.currency || "";
   const assetCode = [asset.code, assetCurrency].filter(Boolean).join("/");
@@ -2521,6 +2680,7 @@ function renderDcaChart() {
     dcaLine,
     anchors,
     temperatureLines,
+    currentDcaLine,
     zeroLine,
     ceilingLine,
     signalMarkers,
@@ -2531,7 +2691,8 @@ function renderDcaChart() {
 
 async function loadAsset(assetId, { historyMode = "none", targetRoute = routeFromLocation() } = {}) {
   if (!assets[assetId]) return;
-  const route = routes.has(targetRoute) ? targetRoute : "overview";
+  const route = (isLegacyMacroObservation(assetId) && !["overview", "methodology"].includes(targetRoute)) || (isMacroAsset(assetId) && targetRoute === "dca")
+    ? "overview" : routes.has(targetRoute) ? targetRoute : "overview";
   if (!requestAssetAccess(assetId, route)) return;
   if (historyMode === "push") history.pushState({ assetId, route }, "", routePath(route, assetId));
   if (historyMode === "replace") history.replaceState({ assetId, route }, "", routePath(route, assetId));
@@ -2559,7 +2720,15 @@ async function loadAsset(assetId, { historyMode = "none", targetRoute = routeFro
     state.assetSummaries.set(assetId, current);
     updateHeader();
     renderWatchlist();
-    renderOverview();
+    const macro = current.schemaVersion === "macro-observation-v1";
+    $("#standard-overview").hidden = macro;
+    $("#quality-banner").hidden = macro;
+    $("#macro-overview").hidden = !macro;
+    if (macro) {
+      state.daily = await loadAssetResource(assetId, "daily-series.json");
+      if (token !== state.loadToken || assetId !== state.assetId) return;
+      renderMacroOverview();
+    } else renderOverview();
     renderMethodology();
     $("#loading-state").hidden = true;
     activateRoute();
@@ -2884,7 +3053,7 @@ window.addEventListener("popstate", () => {
     history.replaceState({ assetId: firstAssetId, route: fallbackRoute }, "", routePath(fallbackRoute, firstAssetId));
     context = { assetId: firstAssetId, route: fallbackRoute };
   }
-  if (context.route === "dca" && !canUseDca()) {
+  if (context.route === "dca" && !canUseDca(context.assetId)) {
     const blockedAssetId = context.assetId;
     history.replaceState({ assetId: blockedAssetId, route: "overview" }, "", routePath("overview", blockedAssetId));
     if (isMember()) window.alert("当前账号未开通定投指标。需要开通时请联系管理员。");
@@ -2919,6 +3088,14 @@ $("#member-display-name-form").addEventListener("submit", handleDisplayNameUpdat
 $("#member-password-form").addEventListener("submit", handlePasswordUpdate);
 $("#member-password-form").addEventListener("input", syncAccountPasswordSubmit);
 $("#asset-search-form").addEventListener("submit", handleAssetSearch);
+$("#asset-category").addEventListener("change", (event) => {
+  const macro = event.target.value === "macro";
+  $("#asset-query").placeholder = macro ? "US10Y / DXY" : "AAPL / 600519 / 0700 / ETH / GC";
+  $("#asset-query").value = "";
+  state.assetSearchResults = [];
+  setAssetPickerMessage(macro ? "宏观分类可添加 US10Y 或 DXY。" : "请输入对应分类的资产代码。");
+  renderAssetSearchResults();
+});
 $("#watchlist-category-filter").addEventListener("change", (event) => {
   const category = String(event.target.value || "all");
   state.watchlistCategory = WATCHLIST_CATEGORIES.has(category) ? category : "all";
@@ -2947,7 +3124,7 @@ if ("serviceWorker" in navigator) {
       return;
     }
     navigator.serviceWorker
-      .register(new URL("service-worker.js?v=1.3.32", SITE_ROOT), { updateViaCache: "none" })
+      .register(new URL("service-worker.js?v=1.3.53", SITE_ROOT), { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(console.warn);
   });
