@@ -1716,14 +1716,14 @@ function renderFundamentals() {
 
 function dcaTierClass(value) {
   const tier = Number(value);
-  return [0, 20, 40, 60, 80, 100].includes(tier) ? `tier-${tier}` : "tier-40";
+  return [0, 25, 50, 75, 100].includes(tier) ? `tier-${tier}` : "tier-50";
 }
 
 // Presentation names are independent of the frozen v1.1 payload vocabulary.
 // Unknown values must never introduce an extra temperature zone in the UI.
 function dcaZoneLabel(value) {
   const label = dcaDisplayText(value);
-  return ["低温区", "定投区", "观望区", "高温区"].includes(label) ? label : "待判断";
+  return ["低温区", "定投区", "中温区", "观望区", "高温区"].includes(label) ? label : "待判断";
 }
 
 function dcaDisplayText(value) {
@@ -1739,17 +1739,18 @@ function renderDcaZoneStatistics(dca, years = state.dcaRangeYears) {
     ? fullSeries.filter((item) => String(item.date || item.time) >= cutoff)
     : fullSeries;
   const zoneDefinitions = [
-    { label: "低温区", className: "zone-cold" },
-    { label: "定投区", className: "zone-invest" },
-    { label: "观望区", className: "zone-watch" },
-    { label: "高温区", className: "zone-hot" },
+    { label: "低温区", amount: "100%", className: "zone-cold" },
+    { label: "定投区", amount: "75%", className: "zone-invest" },
+    { label: "中温区", amount: "50%", className: "zone-mid" },
+    { label: "观望区", amount: "25%", className: "zone-watch" },
+    { label: "高温区", amount: "0%", className: "zone-hot" },
   ];
   $("#dca-statistics-period").textContent = dca?.historyLimited ? "历史不足" : `近${safeYears}年`;
   $("#dca-tier-statistics").innerHTML = selectedSeries.length ? zoneDefinitions.map((item) => {
     const days = selectedSeries.filter((point) => dcaZoneLabel(point.zone) === item.label).length;
     return `
     <article class="dca-tier-card ${item.className}">
-      <span>${item.label}</span>
+      <span>${item.label} · ${item.amount}</span>
       <strong>${fmt(days, 0)} 天</strong>
       <p>${fmt(days / selectedSeries.length * 100, 1)}%</p>
     </article>
@@ -1773,7 +1774,7 @@ function renderDca() {
       <strong>${fmt(current.lzDca, 2)}</strong><span>LZ-DCA</span>
     </div>
     <div class="dca-current-zone ${esc(dcaTierClass(current.amountTier))}">
-      <span>${esc(dcaZoneLabel(current.zone))}</span><strong>${esc(current.amountLabel || "—")} · ${fmt(current.amountTier, 0)}</strong>
+      <span>${esc(dcaZoneLabel(current.zone))}</span><strong>基准金额 ${esc(current.amountLabel || "—")}</strong>
     </div>
     <dl class="stat-list">
       <div><dt>确认日期</dt><dd>${esc(fmtDate(current.date || dca.asOf))}</dd></div>
@@ -1986,7 +1987,7 @@ function installDcaBands(container, chart, dcaLine, bands) {
   backgroundLayer.className = "dca-background-layer";
   container.prepend(backgroundLayer);
   const floor = 0;
-  const ceiling = 3;
+  const ceiling = 2.5;
 
   const redraw = () => {
     backgroundLayer.replaceChildren();
@@ -2553,11 +2554,11 @@ function renderDcaChart() {
   });
   priceLine.setData(priceSeries.map((bar) => ({ time: bar.date || bar.time, value: Number(bar.close) })));
   const currentDca = Number(series.at(-1)?.lzDca);
-  const dcaAxisValues = [0, 0.5, 1, 2, 3, currentDca].filter(Number.isFinite);
+  const dcaAxisValues = [0, 0.5, 1, 1.5, 2, 2.5, currentDca].filter(Number.isFinite);
   const dcaAxisFormatter = (value) => {
     const match = dcaAxisValues.find((candidate) => Math.abs(Number(value) - candidate) < 0.005);
     if (match == null) return "";
-    if (Math.abs(match - currentDca) < 0.005 && ![0, 0.5, 1, 2, 3].includes(match)) return match.toFixed(2);
+    if (Math.abs(match - currentDca) < 0.005 && ![0, 0.5, 1, 1.5, 2, 2.5].includes(match)) return match.toFixed(2);
     return match === 0 ? "0" : match.toFixed(1);
   };
   const dcaLine = api.addLine({
@@ -2569,14 +2570,15 @@ function renderDcaChart() {
     lastValueVisible: false,
     priceFormat: { type: "custom", minMove: 0.01, formatter: dcaAxisFormatter },
     autoscaleInfoProvider: () => ({
-      priceRange: { minValue: 0, maxValue: 3 },
+      priceRange: { minValue: 0, maxValue: 2.5 },
     }),
   });
   dcaLine.setData(series.map((item) => ({ time: item.date || item.time, value: Number(item.lzDca) })));
   const dcaTemperatureGuides = [
     { price: 0.5, title: "低温线", color: "#2f6fb6" },
     { price: 1, title: "定投线", color: "#16835d" },
-    { price: 2, title: "高位线", color: "#c94f55" },
+    { price: 1.5, title: "中温线", color: "#c98632" },
+    { price: 2, title: "高温线", color: "#c94f55" },
   ];
   const temperatureLines = dcaTemperatureGuides.map(({ price, color }) => dcaLine.createPriceLine({
     price,
@@ -2596,7 +2598,7 @@ function renderDcaChart() {
     title: "",
   });
   const ceilingLine = dcaLine.createPriceLine({
-    price: 3,
+    price: 2.5,
     color: "rgba(110,130,146,.45)",
     lineWidth: 1,
     lineVisible: false,
@@ -2614,7 +2616,7 @@ function renderDcaChart() {
   });
   anchors.setData([
     { time: series[0].date || series[0].time, value: 0 },
-    { time: series.at(-1).date || series.at(-1).time, value: 3 },
+    { time: series.at(-1).date || series.at(-1).time, value: 2.5 },
   ]);
   const dcaDates = new Set(series.map((item) => item.date || item.time));
   const signalMarkers = [...(dca.signals || [])]
