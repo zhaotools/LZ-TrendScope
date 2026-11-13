@@ -1739,18 +1739,18 @@ function renderDcaZoneStatistics(dca, years = state.dcaRangeYears) {
     ? fullSeries.filter((item) => String(item.date || item.time) >= cutoff)
     : fullSeries;
   const zoneDefinitions = [
-    { label: "低温区", amount: "100%", className: "zone-cold" },
-    { label: "定投区", amount: "75%", className: "zone-invest" },
-    { label: "中温区", amount: "50%", className: "zone-mid" },
-    { label: "观望区", amount: "25%", className: "zone-watch" },
-    { label: "高温区", amount: "0%", className: "zone-hot" },
+    { label: "低温区", className: "zone-cold" },
+    { label: "定投区", className: "zone-invest" },
+    { label: "中温区", className: "zone-mid" },
+    { label: "观望区", className: "zone-watch" },
+    { label: "高温区", className: "zone-hot" },
   ];
   $("#dca-statistics-period").textContent = dca?.historyLimited ? "历史不足" : `近${safeYears}年`;
   $("#dca-tier-statistics").innerHTML = selectedSeries.length ? zoneDefinitions.map((item) => {
     const days = selectedSeries.filter((point) => dcaZoneLabel(point.zone) === item.label).length;
     return `
     <article class="dca-tier-card ${item.className}">
-      <span>${item.label} · ${item.amount}</span>
+      <span>${item.label}</span>
       <strong>${fmt(days, 0)} 天</strong>
       <p>${fmt(days / selectedSeries.length * 100, 1)}%</p>
     </article>
@@ -1783,7 +1783,6 @@ function renderDca() {
     <div class="dca-recommendation ${esc(dcaTierClass(current.amountTier))}">
       <strong>规则建议</strong>
       <p>${esc(dcaDisplayText(current.recommendation || "等待完成日线后更新。"))}</p>
-      <small>${esc(dcaDisplayText(current.zoneAction))}</small>
     </div>
     ${reasons.length ? `<p class="dca-confirmation">严格信号确认：${reasons.map(esc).join("；")}</p>` : ""}
     ${historyLimited ? `<p class="dca-history-warning">${esc((dca.warnings || [])[0] || "历史数据不足，仅展示当前建议。")}</p>` : ""}
@@ -2027,7 +2026,7 @@ function installDcaGuideLabels(container, chart, dcaLine, guides) {
       const label = document.createElement("span");
       label.className = "dca-guide-label";
       label.textContent = guide.title;
-      label.style.left = `${leftScaleWidth + 2}px`;
+      label.style.left = `${leftScaleWidth + (guide.isCurrent && guides.some((other) => !other.isCurrent && Math.abs(other.price - guide.price) < 0.06) ? 66 : 2)}px`;
       label.style.top = `${y}px`;
       label.style.setProperty("--dca-guide-color", guide.color);
       labelLayer.append(label);
@@ -2553,12 +2552,12 @@ function renderDcaChart() {
     }),
   });
   priceLine.setData(priceSeries.map((bar) => ({ time: bar.date || bar.time, value: Number(bar.close) })));
-  const currentDca = Number(series.at(-1)?.lzDca);
+  const currentDca = Number(dca.current?.lzDca ?? series.at(-1)?.lzDca);
   const dcaAxisValues = [0, 0.5, 1, 1.5, 2, 2.5, currentDca].filter(Number.isFinite);
   const dcaAxisFormatter = (value) => {
+    if (Number.isFinite(currentDca) && Math.abs(Number(value) - currentDca) < 0.005) return currentDca.toFixed(2);
     const match = dcaAxisValues.find((candidate) => Math.abs(Number(value) - candidate) < 0.005);
     if (match == null) return "";
-    if (Math.abs(match - currentDca) < 0.005 && ![0, 0.5, 1, 1.5, 2, 2.5].includes(match)) return match.toFixed(2);
     return match === 0 ? "0" : match.toFixed(1);
   };
   const dcaLine = api.addLine({
@@ -2589,6 +2588,15 @@ function renderDcaChart() {
     lineVisible: true,
     axisLabelVisible: true,
   }));
+  const currentDcaLine = Number.isFinite(currentDca) ? dcaLine.createPriceLine({
+    price: currentDca,
+    color: "#2478a5",
+    title: "",
+    lineWidth: 3,
+    lineStyle: 2,
+    lineVisible: true,
+    axisLabelVisible: true,
+  }) : null;
   const zeroLine = dcaLine.createPriceLine({
     price: 0,
     color: "rgba(110,130,146,.45)",
@@ -2644,7 +2652,10 @@ function renderDcaChart() {
   api.chart.timeScale().fitContent();
   applyDcaTimeRange(api.chart, series);
   const redrawBands = installDcaBands(container, api.chart, dcaLine, dca.bands);
-  const redrawGuideLabels = installDcaGuideLabels(container, api.chart, dcaLine, dcaTemperatureGuides);
+  const currentDcaGuides = Number.isFinite(currentDca)
+    ? [...dcaTemperatureGuides, { price: currentDca, title: `LZ-DCA ${currentDca.toFixed(2)}`, color: "#2478a5", isCurrent: true }]
+    : dcaTemperatureGuides;
+  const redrawGuideLabels = installDcaGuideLabels(container, api.chart, dcaLine, currentDcaGuides);
   const asset = assets[state.assetId] || {};
   const assetCurrency = state.current?.quote?.currency || asset.currency || "";
   const assetCode = [asset.code, assetCurrency].filter(Boolean).join("/");
@@ -2669,6 +2680,7 @@ function renderDcaChart() {
     dcaLine,
     anchors,
     temperatureLines,
+    currentDcaLine,
     zeroLine,
     ceilingLine,
     signalMarkers,
@@ -3112,7 +3124,7 @@ if ("serviceWorker" in navigator) {
       return;
     }
     navigator.serviceWorker
-      .register(new URL("service-worker.js?v=1.3.52", SITE_ROOT), { updateViaCache: "none" })
+      .register(new URL("service-worker.js?v=1.3.53", SITE_ROOT), { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(console.warn);
   });
